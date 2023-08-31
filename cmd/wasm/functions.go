@@ -8,16 +8,15 @@ import (
 	"crypto/sha256"
 	"crypto/x509"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
 	"net/http"
 	"syscall/js"
-
-	"gorm.io/driver/postgres"
-	"gorm.io/gorm"
 )
 
 type SimplePost struct {
@@ -26,19 +25,11 @@ type SimplePost struct {
 	Message []byte
 }
 
-type Config struct {
-    Host     string
-    Port     string
-    Password string
-    User     string
-    DBName   string
-    SSLMode  string
-}
-
 type User struct {
     Email     string
     Password  string
-    PublicKey string
+    PublicKey *rsa.PublicKey
+	Signature string
 }
 
 func RegisterFunc(this js.Value, args []js.Value) interface{} {
@@ -46,27 +37,49 @@ func RegisterFunc(this js.Value, args []js.Value) interface{} {
 	password := []byte(args[1].String())
 	resolve_reject_internals := func(this js.Value, args []js.Value) interface{} {
 		resolve := args[0]
-		// reject := args[1]
+		reject := args[1]
 		go func() {
-			publicKey := publicKey()
-
-			db, err := NewConnection()
+			// Generate private key
+			privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
 			if err != nil {
 				log.Fatal(err)
 			}
-			// defer db.DB().Close()
+			// publicKey := publicKey(privateKey)
 
+			data := append(email, password...)
+			hashed := sha256.Sum256([]byte(data))
+			signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
+			if err != nil {
+				panic(err)
+			}
+			signatureBase64 := base64.StdEncoding.EncodeToString(signature)
+
+			var url = "http://localhost:9090/register"
 			user := User{
 				Email:     string(email),
 				Password:  string(password),
-				PublicKey: publicKey,
-			}
-			result := db.Create(&user)
-			if result.Error != nil {
-				log.Fatal(result.Error)
+				PublicKey: &privateKey.PublicKey,
+				Signature:  signatureBase64,
 			}
 
-			resolve.Invoke(js.ValueOf(fmt.Sprintf("HELLO")))
+			user_bs, err := json.Marshal(user)
+			if err != nil {
+				fmt.Errorf("Error on Marshalling to %s: %s", url, err.Error())
+				reject.Invoke(js.ValueOf("Failure on POST"))
+			}
+
+			resp, err := http.Post(url, "Content-Type:application/json", bytes.NewReader(user_bs))
+			if err != nil {
+				fmt.Errorf("Error on POST to %s: %s", url, err.Error())
+				reject.Invoke(js.ValueOf("Failure on POST"))
+			}
+
+			response_BS, err := io.ReadAll(resp.Body)
+			if err != nil {
+				reject.Invoke(js.ValueOf(fmt.Errorf("Error reading response body: ", err.Error())))
+			}
+
+			resolve.Invoke(js.ValueOf(fmt.Sprintf(string(response_BS))))
 		}()
 		return nil
 	}
@@ -75,29 +88,10 @@ func RegisterFunc(this js.Value, args []js.Value) interface{} {
 	return promise
 }
 
-func NewConnection() (*gorm.DB, error) {
-    configurations := Config{
-        Host:     "localhost",
-        Port:     "5432",
-        Password: "12345678",
-        User:     "postgres",
-        DBName:   "networking",
-        SSLMode:  "disable",
-    }
-    dsn := fmt.Sprintf("host=%s port=%s user=%s password=%s dbname=%s sslmode=%s", configurations.Host, configurations.Port, configurations.User, configurations.Password, configurations.DBName, configurations.SSLMode)
-    db, err := gorm.Open(postgres.Open(dsn), &gorm.Config{})
-    if err != nil {
-        return nil, err
-    }
-    return db, nil
-}
-
-func publicKey() string{
-	// Generate private key
-	privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
-	if err != nil {
-		log.Fatal(err)
-	}
+func publicKey(privateKey *rsa.PrivateKey) string{
+	privKeyBytes := privateKey.D.Bytes()
+	privKeyHex := hex.EncodeToString(privKeyBytes)
+	js.Global().Get("localStorage").Call("setItem", "privKey", privKeyHex)
 
 	// Convert public key to string
 	publicKeyBytes, err := x509.MarshalPKIXPublicKey(&privateKey.PublicKey)
