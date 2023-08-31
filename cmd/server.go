@@ -5,7 +5,6 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
-	"log"
 
 	"encoding/base64"
 	"encoding/json"
@@ -65,64 +64,91 @@ func main() {
 }
 
 func registerHandler(w http.ResponseWriter, r *http.Request) {
+	user, err := parseRequest(r)
+	if err != nil {
+		httpError(w, err, http.StatusBadRequest)
+		return
+	}
+
+	err = verifySignature(user)
+	if err != nil {
+		httpError(w, err, http.StatusBadRequest)
+	}
+
+	err = registerUser(user)
+	if err != nil {
+		httpError(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "Registration successful")
+}
+
+func parseRequest(r *http.Request) (UserReceiving, error) {
 	defer r.Body.Close()
 
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
+		return UserReceiving{}, err
 	}
 
 	var user UserReceiving
-	if err = json.Unmarshal(body, &user); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
+	err = json.Unmarshal(body, &user)
+	if err != nil {
+		return UserReceiving{}, err
 	}
 
+	return user, nil
+}
+
+func verifySignature(user UserReceiving) error {
+	signature, err := base64.StdEncoding.DecodeString(user.Signature)
+	if err != nil {
+		return nil
+	}
+
+	data := user.Email + user.Password
+	hashed := sha256.Sum256([]byte(data))
+
+	err = rsa.VerifyPKCS1v15(user.PublicKey, crypto.SHA256, hashed[:], signature)
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func registerUser(user UserReceiving) error {
 	publicKeyString, err := PublicKeyToString(user.PublicKey)
 	if err != nil {
-		fmt.Println("Failed to convert public key to string:", err)
-		return
+		return err
 	}
 
 	userSending := UserSending{
-		EmailS:     user.Email,
-		PasswordS:  user.Password,
+		EmailS: user.Email,
+		PasswordS: user.Password,
 		PublicKeyS: publicKeyString,
 	}
 
-	fmt.Println("Register Handler - Email:", user.Email)
-	fmt.Println("Register Handler - Password:", user.Password)
-	fmt.Println("Register Handler - PublicKey:", user.PublicKey)
-
-	signature, err := base64.StdEncoding.DecodeString(user.Signature)
-	data := user.Email + user.Password
-	hashed := sha256.Sum256([]byte(data))
-	err = rsa.VerifyPKCS1v15(user.PublicKey, crypto.SHA256, hashed[:], signature)
-	if err != nil {
-		fmt.Println("Could not verify signature:", err)
-		return
-	}
-	fmt.Println("Signature verified")
-
 	db, err := NewConnection()
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	defer CloseConnection(db)
 
-	db.AutoMigrate(&UserSending{})
-	
+	db.AutoMigrate(&userSending)
+
 	result := db.Create(&userSending)
 	if result.Error != nil {
-		log.Fatal(result.Error)
-	} else {
-		fmt.Println("Registration successful")
+		return result.Error
 	}
 
-	response := "Registration successful"
-	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, response)
+	return nil
+}
+
+func httpError(w http.ResponseWriter, err error, code int) {
+	http.Error(w, err.Error(), code)
 }
 
 func NewConnection() (*gorm.DB, error) {
