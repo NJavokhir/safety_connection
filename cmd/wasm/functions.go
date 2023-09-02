@@ -88,6 +88,60 @@ func RegisterFunc(this js.Value, args []js.Value) interface{} {
 	return promise
 }
 
+func LoginFunc(this js.Value, args []js.Value) interface{} {
+	email := []byte(args[0].String())
+	password := []byte(args[1].String())
+	resolve_reject_internals := func (this js.Value, args []js.Value) interface{}  {
+		resolve := args[0]
+		reject := args[1]
+		go func ()  {
+			privateKey, err := rsa.GenerateKey(rand.Reader, 2048)
+			if err != nil {
+				log.Fatal(err)
+			}
+
+			data := append(email, password...)
+			hashed := sha256.Sum256([]byte(data))
+			signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
+			if err != nil {
+				panic(err)
+			}
+			signatureBase64 := base64.StdEncoding.EncodeToString(signature)
+
+			var url = "http://localhost:9090/login"
+			user := User{
+				Email: string(email),
+				Password: string(password),
+				PublicKey: &privateKey.PublicKey,
+				Signature: signatureBase64,
+			}
+
+			user_bs, err := json.Marshal(user)
+			if err != nil {
+				fmt.Errorf("Error on Marshalling to %s: %s", url, err.Error())
+				reject.Invoke(js.ValueOf("Failure on POST"))
+			}
+
+			resp, err := http.Post(url, "Content-Type:application/json", bytes.NewReader(user_bs))
+			if err != nil {
+				fmt.Errorf("Error on POST to %s: %s", url, err.Error())
+				reject.Invoke(js.ValueOf("Failure on POST"))
+			}
+
+			response_BS, err := io.ReadAll(resp.Body)
+			if err != nil {
+				reject.Invoke(js.ValueOf(fmt.Errorf("Error reading response body: ", err.Error())))
+			}
+
+			resolve.Invoke(js.ValueOf(fmt.Sprintf(string(response_BS))))
+		}()
+		return nil
+	}
+	promiseConstructor := js.Global().Get("Promise")
+	promise := promiseConstructor.New(js.FuncOf(resolve_reject_internals))
+	return promise
+}
+
 func publicKey(privateKey *rsa.PrivateKey) string{
 	privKeyBytes := privateKey.D.Bytes()
 	privKeyHex := hex.EncodeToString(privKeyBytes)

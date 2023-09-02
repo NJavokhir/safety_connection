@@ -46,9 +46,23 @@ type UserSending struct {
     PasswordS  string `json:"password"`
     PublicKeyS string `json:"publickey"`
 }
+type User struct {
+	Email    string `gorm:"uniqueIndex;not null"`
+	password string `gorm:"not null"`
+}
+
+type RequestLogin struct {
+	Email    string
+	Password string
+}
+
+type ResponseLogin struct {
+	User *User
+}
 
 func main() {
 	http.HandleFunc("/register", registerHandler)
+	http.HandleFunc("/login", loginHandler)
 	http.HandleFunc("/post-signature", postSignatureHandler)
 
 	c := cors.New(cors.Options{
@@ -82,6 +96,29 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, "Registration successful")
+}
+
+func loginHandler(w http.ResponseWriter, r *http.Request) {
+	fmt.Println("Came")
+	user, err := parseRequest(r)
+	if err != nil {
+		httpError(w, err, http.StatusBadRequest)
+		return
+	}
+
+	err  = verifySignature(user)
+	if err != nil {
+		httpError(w, err, http.StatusBadRequest)
+	}
+
+	_, err = loginUser(user)
+	if err != nil {
+		httpError(w, err, http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprintf(w, "Authorize")
 }
 
 func parseRequest(r *http.Request) (UserReceiving, error) {
@@ -144,6 +181,31 @@ func registerUser(user UserReceiving) error {
 	}
 
 	return nil
+}
+
+func loginUser(user UserReceiving) (*ResponseLogin, error) {
+	var userDB User
+
+	db, err := NewConnection()
+	if err != nil {
+		return nil, err
+	}
+	defer CloseConnection(db)
+
+	err = db.Where("email = ?", user.Email).First(&userDB).Error
+	// if err != nil {
+	// 	if err == gorm.ErrRecordNotFund {
+	// 		return nil, err
+	// 	} else {
+	// 		return nil, err
+	// 	}
+	// }
+
+	if user.Password != userDB.password {
+		return nil, err
+	}
+
+	return &ResponseLogin{User: &userDB}, nil
 }
 
 func httpError(w http.ResponseWriter, err error, code int) {
