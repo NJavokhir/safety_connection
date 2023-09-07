@@ -5,6 +5,9 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	// "go/token"
+	"os"
+	"time"
 
 	"encoding/base64"
 	"encoding/json"
@@ -16,6 +19,8 @@ import (
 
 	"github.com/rs/cors"
 
+	"github.com/golang-jwt/jwt"
+	"golang.org/x/crypto/bcrypt"
 	"gorm.io/driver/postgres"
 	"gorm.io/gorm"
 )
@@ -47,8 +52,8 @@ type UserSending struct {
     PublicKeyS string `json:"publickey"`
 }
 type User struct {
-	Email    string `gorm:"uniqueIndex;not null"`
-	password string `gorm:"not null"`
+	Email_s    string `gorm:"uniqueIndex;not null"`
+	Password_s string `gorm:"not null"`
 }
 
 type RequestLogin struct {
@@ -59,6 +64,14 @@ type RequestLogin struct {
 type ResponseLogin struct {
 	User *User
 }
+
+type ReturnValue struct {
+	Status int    `json:"status"`
+	Body   string `json:"body"` 
+	Token  string `json:"token"`
+ 
+}
+
 
 func main() {
 	http.HandleFunc("/register", registerHandler)
@@ -99,7 +112,6 @@ func registerHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func loginHandler(w http.ResponseWriter, r *http.Request) {
-	fmt.Println("Came")
 	user, err := parseRequest(r)
 	if err != nil {
 		httpError(w, err, http.StatusBadRequest)
@@ -111,14 +123,36 @@ func loginHandler(w http.ResponseWriter, r *http.Request) {
 		httpError(w, err, http.StatusBadRequest)
 	}
 
-	_, err = loginUser(user)
+	loginUser, err := loginUser(user)
 	if err != nil {
 		httpError(w, err, http.StatusInternalServerError)
 		return
 	}
+	//fmt.Println(loginUser.User) // Access the user object in the response
+	//fmt.Println(*&loginUser.User.Email_s) // Dereference the pointer to access the user object
 
+	token := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
+		"sub": *&loginUser.User.Email_s,
+		"exp": time.Now().Add(time.Hour * 24 * 30).Unix(),
+	})
+
+	tokenString, err := token.SignedString([]byte(os.Getenv("SECRET")))
+	returnValue := ReturnValue{}
+	if err != nil {
+		returnValue = ReturnValue{
+			Status: 500,
+		}
+	} else {
+		returnValue = ReturnValue{
+			Status: 200,
+			Body:   "Success",
+			Token:  tokenString,
+		}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	fmt.Fprintf(w, "Authorize")
+	json.NewEncoder(w).Encode(returnValue)
 }
 
 func parseRequest(r *http.Request) (UserReceiving, error) {
@@ -192,16 +226,15 @@ func loginUser(user UserReceiving) (*ResponseLogin, error) {
 	}
 	defer CloseConnection(db)
 
-	err = db.Where("email = ?", user.Email).First(&userDB).Error
-	// if err != nil {
-	// 	if err == gorm.ErrRecordNotFund {
-	// 		return nil, err
-	// 	} else {
-	// 		return nil, err
-	// 	}
-	// }
+	err = db.Table("user_sendings").Where("email_s = ?", user.Email).First(&userDB).Error
+	if err != nil {
+		fmt.Println(err)
+		return nil, err
+	}
 
-	if user.Password != userDB.password {
+	err = bcrypt.CompareHashAndPassword([]byte(userDB.Password_s), []byte(user.Password))
+	if err != nil {
+		fmt.Println(err)
 		return nil, err
 	}
 
@@ -286,28 +319,3 @@ func postSignatureHandler(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprintf(w, response)
 }
-
-// func verifySignature(message string, signature string, publicKey string) error {
-// 	hash := sha256.Sum256([]byte(message))
-// 	signatureBytes, err := base64.StdEncoding.DecodeString(signature)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to decode base64 signature: %v", err)
-// 	}
-
-// 	publicKeyBytes, err := base64.StdEncoding.DecodeString(publicKey)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to decode base64 public key: %v", err)
-// 	}
-
-// 	parsedPublicKey, err := rsa.PublicKeyFromJSON(publicKeyBytes)
-// 	if err != nil {
-// 		return fmt.Errorf("failed to parse public key: %v", err)
-// 	}
-
-// 	err = rsa.VerifyPKCS1v15(parsedPublicKey, crypto.SHA256, hash[:], signatureBytes)
-// 	if err != nil {
-// 		return fmt.Errorf("signature verification failed: %v", err)
-// 	}
-
-// 	return nil
-// }

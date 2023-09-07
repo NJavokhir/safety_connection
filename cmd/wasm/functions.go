@@ -17,6 +17,7 @@ import (
 	"log"
 	"net/http"
 	"syscall/js"
+	"golang.org/x/crypto/bcrypt"
 )
 
 type SimplePost struct {
@@ -46,7 +47,8 @@ func RegisterFunc(this js.Value, args []js.Value) interface{} {
 			}
 			// publicKey := publicKey(privateKey)
 
-			data := append(email, password...)
+			hashedPass, err := bcrypt.GenerateFromPassword([]byte(password), bcrypt.DefaultCost)
+			data := append(email, string(hashedPass)...)
 			hashed := sha256.Sum256([]byte(data))
 			signature, err := rsa.SignPKCS1v15(rand.Reader, privateKey, crypto.SHA256, hashed[:])
 			if err != nil {
@@ -54,14 +56,14 @@ func RegisterFunc(this js.Value, args []js.Value) interface{} {
 			}
 			signatureBase64 := base64.StdEncoding.EncodeToString(signature)
 
+
 			var url = "http://localhost:9090/register"
 			user := User{
 				Email:     string(email),
-				Password:  string(password),
+				Password:  string(hashedPass),
 				PublicKey: &privateKey.PublicKey,
 				Signature:  signatureBase64,
 			}
-
 			user_bs, err := json.Marshal(user)
 			if err != nil {
 				fmt.Errorf("Error on Marshalling to %s: %s", url, err.Error())
@@ -133,7 +135,11 @@ func LoginFunc(this js.Value, args []js.Value) interface{} {
 				reject.Invoke(js.ValueOf(fmt.Errorf("Error reading response body: ", err.Error())))
 			}
 
-			resolve.Invoke(js.ValueOf(fmt.Sprintf(string(response_BS))))
+			var originalData map[string]interface{}
+			err = json.Unmarshal(response_BS, &originalData)
+			
+
+			resolve.Invoke(js.ValueOf(originalData))
 		}()
 		return nil
 	}

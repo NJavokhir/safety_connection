@@ -83,7 +83,7 @@
           message: ''
         },
       ],
-      loginData: false,
+      loginData: true,
       email: "javohir@gmail.com",
       password: "1234",
       confirm_password: "1234",
@@ -113,9 +113,11 @@
         this.loader = true
         if (this.email && this.email) {
           const result = await window.loginFunc(this.email, this.password)
-          if (result == 'Authorize') {
+          console.log(result)
+          if (result.Status == 200) {
             this.loader = false
             console.log(result)
+            localStorage.setItem("token", result)
           } else {
             this.loader = false
           }
